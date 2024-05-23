@@ -1,5 +1,5 @@
 // const { WebhookClient } = require("dialogflow-fulfillment");
-const dialogflow = require("dialogflow");
+const dialogflow = require('dialogflow');
 // const dfFulfillment = require("dialogflow-fulfillment");
 const config = require("../config/devKey");
 const axios = require("axios");
@@ -10,7 +10,7 @@ const sessionId = config.dialogFlowSessionID;
 
 const credentials = {
   client_email: config.client_email,
-  privateKey: privateKey,
+  private_key: privateKey,
 };
 
 const sessionClient = new dialogflow.SessionsClient({
@@ -18,31 +18,58 @@ const sessionClient = new dialogflow.SessionsClient({
     credentials: credentials,
 });
 
-console.log("sessionClient :>> ", sessionClient);
+// console.log("sessionClient :>> ", sessionClient);
 const weebHook = async (req, res) => {
   try {
     // const agent = new WebhookClient({ request: req, response: res });
     const sessionPath = sessionClient.sessionPath(
       projectId,
-      sessionId + req.body.useId
+      sessionId + req.body.session.split('/').pop()
     );
 
-    const request = {
-      session: sessionPath,
-      queryInput: {
-        text: {
-          text: req.body.text,
-          languageCode: "en-US",
-        },
+    const queryInput = {
+      text: {
+        text: req.body.queryText,
+        languageCode: 'en-US',
       },
     };
 
+    const request = {
+      session: sessionPath,
+      queryInput: queryInput,
+    };
+
     try {
-      const response = sessionClient.detectIntent(request);
+      const responses = await sessionClient.detectIntent(request);
+      console.log("asdsadasd", responses)
+      const result = responses[0].queryResult;
+      console.log("hello",result.intent )
+      let responseText = '';
+      if (result.intent.displayName === 'Order Inquiry') {
+        responseText = 'Please provide your order ID.';
+        await setContext('awaiting_order_id', 5, req.body.session);
+      } else if (result.intent.displayName === 'Order ID Provided') {
+        const orderId = result.parameters.fields.orderId.stringValue;
+        if (orderId) {
+          // Fetch order details from third-party API
+          try {
+            const orderDetails = await fetchOrderDetails(orderId);
+            responseText = `Here are your order details: ${orderDetails}`;
+            await clearContext('awaiting_order_id', req.body.session);
+          } catch (error) {
+            responseText = 'There was an error fetching your order details. Please try again.';
+          }
+        } else {
+          responseText = 'Please provide a valid order ID.';
+        }
+      } else {
+        responseText = result.fulfillmentText;
+      }
+  
       return res.status(200).send({
         status: 1,
         message: "Response",
-        data: response,
+        data: responseText,
       });
     } catch (error) {
       return res.status(500).send({
@@ -58,6 +85,37 @@ const weebHook = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+const setContext = async (contextName, lifespanCount, session) => {
+  const contextClient = new dialogflow.ContextsClient();
+  const sessionPath = sessionClient.projectAgentSessionPath(projectId, sessionId + session.split('/').pop());
+  const contextPath = contextClient.projectAgentSessionContextPath(projectId, sessionPath, contextName);
+
+  const context = {
+    name: contextPath,
+    lifespanCount: lifespanCount,
+  };
+
+  await contextClient.createContext({ parent: sessionPath, context: context });
+};
+
+const clearContext = async (contextName, session) => {
+  const contextClient = new dialogflow.ContextsClient();
+  const sessionPath = sessionClient.projectAgentSessionPath(projectId, sessionId + session.split('/').pop());
+  const contextPath = contextClient.projectAgentSessionContextPath(projectId, sessionPath, contextName);
+
+  await contextClient.deleteContext({ name: contextPath });
+};
+
+const fetchOrderDetails = async (orderId) => {
+  // Replace with your third-party API call logic
+  const response = await axios.post(
+    "https://orderstatusapi-dot-organization-project-311520.uc.r.appspot.com/api/getOrderStatus",
+    { orderId }
+  );
+
+  return response.data;
 };
 
 const weebHookNew = async (req, res) => {
